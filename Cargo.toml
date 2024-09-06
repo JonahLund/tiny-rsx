@@ -1,0 +1,13 @@
+[package]
+name = "tiny-rsx"
+version = "0.2.0"
+edition = "2021"
+
+[features]
+default = ["fmt"]
+fmt = []
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["extra-traits", "full"] }
