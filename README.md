@@ -1,3 +1,3 @@
 # tiny-rsx
 
-A fast and small RSX syn parser.
+A fast and minimal syn RSX (JSX in Rust) parser.
