@@ -1,91 +1,137 @@
 use syn::{
+    braced,
     ext::IdentExt as _,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
+    token, Ident, LitStr, Result, Token,
 };
 
 use crate::ast;
 
 mod kw {
-    syn::custom_keyword!(DOCTYPE);
-    syn::custom_keyword!(html);
+    use syn::custom_keyword;
+
+    custom_keyword!(DOCTYPE);
+    custom_keyword!(html);
 }
 
-pub struct Parser {}
+/// Parses the input tokens
+pub fn parse(input: ParseStream, strict: bool) -> Result<Box<[ast::Node]>> {
+    let mut nodes = Vec::new();
+    let mut stack = Vec::new();
 
-impl Parser {
-    pub fn new() -> Self {
-        Self {}
+    while !input.is_empty() {
+        let curr: ast::Node = input.parse()?;
+
+        match (&curr, stack.pop()) {
+            // current and stack node are both tags
+            (ast::Node::Tag(curr), Some(other)) => {
+                match (curr, &other) {
+                    // invalid, inverse order
+                    (ast::Tag::Opening { .. }, ast::Tag::Closing { .. }) => {
+                        panic!("opening closing")
+                    }
+                    // invalid
+                    (ast::Tag::Closing { .. }, ast::Tag::Closing { .. }) => {
+                        panic!("closing closing")
+                    }
+                    // valid
+                    (ast::Tag::Opening { .. }, ast::Tag::Opening { .. }) => {
+                        panic!("inverse order")
+                    }
+                    // valid
+                    (
+                        ast::Tag::Closing { name },
+                        ast::Tag::Opening {
+                            name: other_name, ..
+                        },
+                    ) => {
+                        if name != other_name {
+                            stack.push(ast::Node::Tag(other));
+                        } else {
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
-    pub fn parse_ident(
-        &self,
-        input: ParseStream,
-    ) -> syn::Result<ast::DashIdent> {
+    Ok(nodes.into_boxed_slice())
+}
+
+impl Parse for ast::DashIdent {
+    fn parse(input: ParseStream) -> Result<Self> {
         // Parse a non-empty sequence of identifiers separated by dashes.
-        let inner = Punctuated::<syn::Ident, syn::Token![-]>::parse_separated_nonempty_with(
-            input,
-            syn::Ident::parse_any,
-        )?;
+        let inner =
+            Punctuated::<Ident, Token![-]>::parse_separated_nonempty_with(
+                input,
+                Ident::parse_any,
+            )?;
 
         Ok(ast::DashIdent(inner))
     }
+}
 
-    pub fn parse_doctype(
-        &self,
-        input: ParseStream,
-    ) -> syn::Result<ast::Doctype> {
-        input.parse::<syn::Token![<]>()?;
-        input.parse::<syn::Token![!]>()?;
+impl Parse for ast::Doctype {
+    fn parse(input: ParseStream) -> Result<Self> {
+        input.parse::<Token![<]>()?;
+        input.parse::<Token![!]>()?;
         input.parse::<kw::DOCTYPE>()?;
         input.parse::<kw::html>()?;
-        input.parse::<syn::Token![>]>()?;
+        input.parse::<Token![>]>()?;
 
         Ok(ast::Doctype)
     }
+}
 
-    pub fn parse_value(&self, input: ParseStream) -> syn::Result<ast::Value> {
+impl Parse for ast::Value {
+    fn parse(input: ParseStream) -> Result<Self> {
         let lookahead = input.lookahead1();
-        if lookahead.peek(syn::LitStr) {
+        if lookahead.peek(LitStr) {
             Ok(ast::Value::LitStr(input.parse()?))
-        } else if lookahead.peek(syn::token::Brace) {
+        } else if lookahead.peek(token::Brace) {
             let content;
-            syn::braced!(content in input);
+            braced!(content in input);
             Ok(ast::Value::Expr(content.parse()?))
         } else {
             Err(lookahead.error())
         }
     }
+}
 
-    pub fn parse_attr(&self, input: ParseStream) -> syn::Result<ast::Attr> {
-        let key = self.parse_ident(input)?;
-        input.parse::<syn::Token![=]>()?;
-        let value = self.parse_value(input)?;
+impl Parse for ast::Attr {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let key = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let value = input.parse()?;
 
         Ok(ast::Attr { key, value })
     }
+}
 
-    pub fn parse_tag(&self, input: ParseStream) -> syn::Result<ast::Tag> {
-        input.parse::<syn::Token![<]>()?;
+impl Parse for ast::Tag {
+    fn parse(input: ParseStream) -> Result<Self> {
+        input.parse::<Token![<]>()?;
 
-        if input.parse::<Option<syn::Token![/]>>()?.is_some() {
-            let name = self.parse_ident(input)?;
-            input.parse::<syn::Token![>]>()?;
+        if input.parse::<Option<Token![/]>>()?.is_some() {
+            let name = input.parse()?;
+            input.parse::<Token![>]>()?;
 
             return Ok(ast::Tag::Closing { name });
         }
 
-        let name = self.parse_ident(input)?;
+        let name = input.parse()?;
 
         let mut attrs = Vec::new();
-        while !(input.peek(syn::Token![>])
-            || (input.peek(syn::Token![/]) && input.peek2(syn::Token![>])))
+        while !(input.peek(Token![>])
+            || (input.peek(Token![/]) && input.peek2(Token![>])))
         {
-            attrs.push(self.parse_attr(input)?);
+            attrs.push(input.parse()?);
         }
 
         let void_slash = input.parse()?;
-        input.parse::<syn::Token![>]>()?;
+        input.parse::<Token![>]>()?;
 
         Ok(ast::Tag::Opening {
             name,
@@ -93,59 +139,23 @@ impl Parser {
             void_slash,
         })
     }
-
-    pub fn parse_node(&self, input: ParseStream) -> syn::Result<ast::Node> {
-        let lookahead = input.lookahead1();
-        if lookahead.peek(syn::Token![<])
-            && input.peek2(syn::Token![!])
-            && input.peek3(kw::DOCTYPE)
-        {
-            Ok(ast::Node::Doctype(self.parse_doctype(input)?))
-        } else if lookahead.peek(syn::Token![<]) {
-            Ok(ast::Node::Tag(self.parse_tag(input)?))
-        } else if lookahead.peek(syn::LitStr)
-            || lookahead.peek(syn::token::Brace)
-        {
-            Ok(ast::Node::Value(self.parse_value(input)?))
-        } else {
-            Err(lookahead.error())
-        }
-    }
-}
-
-impl Parse for ast::DashIdent {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Parser::new().parse_ident(input)
-    }
-}
-
-impl Parse for ast::Doctype {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Parser::new().parse_doctype(input)
-    }
-}
-
-impl Parse for ast::Value {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Parser::new().parse_value(input)
-    }
-}
-
-impl Parse for ast::Attr {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Parser::new().parse_attr(input)
-    }
-}
-
-impl Parse for ast::Tag {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Parser::new().parse_tag(input)
-    }
 }
 
 impl Parse for ast::Node {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Parser::new().parse_node(input)
+    fn parse(input: ParseStream) -> Result<Self> {
+        let lookahead = input.lookahead1();
+        if lookahead.peek(Token![<])
+            && input.peek2(Token![!])
+            && input.peek3(kw::DOCTYPE)
+        {
+            Ok(ast::Node::Doctype(input.parse()?))
+        } else if lookahead.peek(Token![<]) {
+            Ok(ast::Node::Tag(input.parse()?))
+        } else if lookahead.peek(LitStr) || lookahead.peek(token::Brace) {
+            Ok(ast::Node::Value(input.parse()?))
+        } else {
+            Err(lookahead.error())
+        }
     }
 }
 
