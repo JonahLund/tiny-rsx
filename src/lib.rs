@@ -1,8 +1,7 @@
+extern crate proc_macro;
+
 pub mod ast;
 
-mod parse;
-
-#[cfg(feature = "fmt")]
 mod fmt;
-#[cfg(feature = "fmt")]
-pub use fmt::Formatter;
+mod parse;
+pub use parse::*;
