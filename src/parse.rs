@@ -1,3 +1,5 @@
+use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use syn::{
     braced,
     ext::IdentExt as _,
@@ -6,61 +8,17 @@ use syn::{
     token, Ident, LitStr, Result, Token,
 };
 
-use crate::ast;
+use crate::ast::{kw, Attr, DashIdent, Doctype, Node, NodeTree, Tag, Value};
 
-mod kw {
-    use syn::custom_keyword;
-
-    custom_keyword!(DOCTYPE);
-    custom_keyword!(html);
+pub fn parse(input: TokenStream) -> Result<Box<[Node]>> {
+    Ok(syn::parse::<NodeTree>(input)?.nodes)
 }
 
-/// Parses the input tokens
-pub fn parse(input: ParseStream, strict: bool) -> Result<Box<[ast::Node]>> {
-    let mut nodes = Vec::new();
-    let mut stack = Vec::new();
-
-    while !input.is_empty() {
-        let curr: ast::Node = input.parse()?;
-
-        match (&curr, stack.pop()) {
-            // current and stack node are both tags
-            (ast::Node::Tag(curr), Some(other)) => {
-                match (curr, &other) {
-                    // invalid, inverse order
-                    (ast::Tag::Opening { .. }, ast::Tag::Closing { .. }) => {
-                        panic!("opening closing")
-                    }
-                    // invalid
-                    (ast::Tag::Closing { .. }, ast::Tag::Closing { .. }) => {
-                        panic!("closing closing")
-                    }
-                    // valid
-                    (ast::Tag::Opening { .. }, ast::Tag::Opening { .. }) => {
-                        panic!("inverse order")
-                    }
-                    // valid
-                    (
-                        ast::Tag::Closing { name },
-                        ast::Tag::Opening {
-                            name: other_name, ..
-                        },
-                    ) => {
-                        if name != other_name {
-                            stack.push(ast::Node::Tag(other));
-                        } else {
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Ok(nodes.into_boxed_slice())
+pub fn parse2(input: TokenStream2) -> Result<Box<[Node]>> {
+    Ok(syn::parse2::<NodeTree>(input)?.nodes)
 }
 
-impl Parse for ast::DashIdent {
+impl Parse for DashIdent {
     fn parse(input: ParseStream) -> Result<Self> {
         // Parse a non-empty sequence of identifiers separated by dashes.
         let inner =
@@ -69,56 +27,60 @@ impl Parse for ast::DashIdent {
                 Ident::parse_any,
             )?;
 
-        Ok(ast::DashIdent(inner))
+        Ok(DashIdent(inner))
     }
 }
 
-impl Parse for ast::Doctype {
+impl Parse for Doctype {
     fn parse(input: ParseStream) -> Result<Self> {
-        input.parse::<Token![<]>()?;
-        input.parse::<Token![!]>()?;
-        input.parse::<kw::DOCTYPE>()?;
-        input.parse::<kw::html>()?;
-        input.parse::<Token![>]>()?;
-
-        Ok(ast::Doctype)
+        Ok(Doctype {
+            lt_sign: input.parse()?,
+            excl_mark: input.parse()?,
+            doctype: input.parse()?,
+            html: input.parse()?,
+            gt_sign: input.parse()?,
+        })
     }
 }
 
-impl Parse for ast::Value {
+impl Parse for Value {
     fn parse(input: ParseStream) -> Result<Self> {
         let lookahead = input.lookahead1();
         if lookahead.peek(LitStr) {
-            Ok(ast::Value::LitStr(input.parse()?))
+            Ok(Value::LitStr(input.parse()?))
         } else if lookahead.peek(token::Brace) {
             let content;
             braced!(content in input);
-            Ok(ast::Value::Expr(content.parse()?))
+            Ok(Value::Expr(content.parse()?))
         } else {
             Err(lookahead.error())
         }
     }
 }
 
-impl Parse for ast::Attr {
+impl Parse for Attr {
     fn parse(input: ParseStream) -> Result<Self> {
-        let key = input.parse()?;
-        input.parse::<Token![=]>()?;
-        let value = input.parse()?;
-
-        Ok(ast::Attr { key, value })
+        Ok(Attr {
+            key: input.parse()?,
+            eq_sign: input.parse()?,
+            value: input.parse()?,
+        })
     }
 }
 
-impl Parse for ast::Tag {
+impl Parse for Tag {
     fn parse(input: ParseStream) -> Result<Self> {
-        input.parse::<Token![<]>()?;
+        let lt_sign = input.parse()?;
 
         if input.parse::<Option<Token![/]>>()?.is_some() {
             let name = input.parse()?;
-            input.parse::<Token![>]>()?;
+            let gt_sign = input.parse()?;
 
-            return Ok(ast::Tag::Closing { name });
+            return Ok(Tag::Closing {
+                lt_sign,
+                name,
+                gt_sign,
+            });
         }
 
         let name = input.parse()?;
@@ -131,31 +93,95 @@ impl Parse for ast::Tag {
         }
 
         let void_slash = input.parse()?;
-        input.parse::<Token![>]>()?;
+        let gt_sign = input.parse()?;
 
-        Ok(ast::Tag::Opening {
+        Ok(Tag::Opening {
+            lt_sign,
             name,
             attrs,
             void_slash,
+            gt_sign,
         })
     }
 }
 
-impl Parse for ast::Node {
+impl Parse for Node {
     fn parse(input: ParseStream) -> Result<Self> {
         let lookahead = input.lookahead1();
         if lookahead.peek(Token![<])
             && input.peek2(Token![!])
             && input.peek3(kw::DOCTYPE)
         {
-            Ok(ast::Node::Doctype(input.parse()?))
+            Ok(Node::Doctype(input.parse()?))
         } else if lookahead.peek(Token![<]) {
-            Ok(ast::Node::Tag(input.parse()?))
+            Ok(Node::Tag(input.parse()?))
         } else if lookahead.peek(LitStr) || lookahead.peek(token::Brace) {
-            Ok(ast::Node::Value(input.parse()?))
+            Ok(Node::Value(input.parse()?))
         } else {
             Err(lookahead.error())
         }
+    }
+}
+
+impl Parse for NodeTree {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mut nodes = Vec::new();
+        let mut stack = Vec::new();
+
+        while !input.is_empty() {
+            let curr = input.parse()?;
+            let other = stack.last().and_then(|i| nodes.get(*i));
+
+            match (&curr, other) {
+                (
+                    Node::Tag(Tag::Opening {
+                        void_slash: None, ..
+                    }),
+                    _,
+                ) => {
+                    nodes.push(curr);
+                    stack.push(nodes.len() - 1);
+                }
+                (
+                    Node::Tag(Tag::Closing { name, .. }),
+                    Some(Node::Tag(Tag::Opening {
+                        name: other_name,
+                        void_slash: None,
+                        ..
+                    })),
+                ) => {
+                    if name != other_name {
+                        return Err(syn::Error::new_spanned(
+                            &curr,
+                            format_args!(
+                                "closing tag mismatch, expected \
+                                 </{other_name}> found </{name}>"
+                            ),
+                        ));
+                    }
+
+                    nodes.push(curr);
+                    stack.pop();
+                }
+                (Node::Tag(Tag::Closing { .. }), None) => {
+                    return Err(syn::Error::new_spanned(
+                        &curr,
+                        "missing opening tag",
+                    ));
+                }
+                _ => {
+                    nodes.push(curr);
+                }
+            }
+        }
+
+        if let Some(node) = stack.last().and_then(|i| nodes.get(*i)) {
+            return Err(syn::Error::new_spanned(node, "missing closing tag"));
+        }
+
+        Ok(Self {
+            nodes: nodes.into_boxed_slice(),
+        })
     }
 }
 
@@ -168,7 +194,7 @@ mod tests {
 
     macro_rules! dash_ident {
         ($($tt:tt)*) => {
-            syn::parse2::<ast::DashIdent>(quote!($($tt)*)).unwrap()
+            syn::parse2::<DashIdent>(quote!($($tt)*)).unwrap()
         };
     }
 
@@ -187,28 +213,34 @@ mod tests {
     #[test]
     fn parses_to_doctype() {
         assert_eq!(
-            syn::parse2::<ast::Doctype>(quote!(<!DOCTYPE html>)).unwrap(),
-            ast::Doctype,
+            syn::parse2::<Doctype>(quote!(<!DOCTYPE html>)).unwrap(),
+            Doctype {
+                lt_sign: Token![<](Span::call_site()),
+                excl_mark: Token![!](Span::call_site()),
+                doctype: kw::DOCTYPE(Span::call_site()),
+                html: kw::html(Span::call_site()),
+                gt_sign: Token![>](Span::call_site()),
+            }
         )
     }
 
     #[test]
     fn parses_to_string_value() {
         assert_eq!(
-            syn::parse2::<ast::Value>(quote!("foo")).unwrap(),
-            ast::Value::LitStr(lit_str!("foo")),
+            syn::parse2::<Value>(quote!("foo")).unwrap(),
+            Value::LitStr(lit_str!("foo")),
         );
         assert_eq!(
-            syn::parse2::<ast::Value>(quote!("")).unwrap(),
-            ast::Value::LitStr(lit_str!("")),
+            syn::parse2::<Value>(quote!("")).unwrap(),
+            Value::LitStr(lit_str!("")),
         );
     }
 
     #[test]
     fn parses_to_expr_value() {
         assert_eq!(
-            syn::parse2::<ast::Value>(quote!({ true })).unwrap(),
-            ast::Value::Expr(syn::Expr::Lit(syn::ExprLit {
+            syn::parse2::<Value>(quote!({ true })).unwrap(),
+            Value::Expr(syn::Expr::Lit(syn::ExprLit {
                 attrs: vec![],
                 lit: syn::Lit::Bool(lit_bool!(true))
             })),
@@ -218,11 +250,13 @@ mod tests {
     #[test]
     fn parses_to_opening_tag() {
         assert_eq!(
-            syn::parse2::<ast::Tag>(quote! ( <foo> )).unwrap(),
-            ast::Tag::Opening {
+            syn::parse2::<Tag>(quote! ( <foo> )).unwrap(),
+            Tag::Opening {
+                lt_sign: token::Lt(Span::call_site()),
                 name: dash_ident!(foo),
                 attrs: vec![],
-                void_slash: None
+                void_slash: None,
+                gt_sign: token::Gt(Span::call_site()),
             }
         )
     }
@@ -230,24 +264,27 @@ mod tests {
     #[test]
     fn parses_to_opening_tag_with_attrs() {
         assert_eq!(
-            syn::parse2::<ast::Tag>(quote!(<foo bar="baz" qux={false}>))
-                .unwrap(),
-            ast::Tag::Opening {
+            syn::parse2::<Tag>(quote!(<foo bar="baz" qux={false}>)).unwrap(),
+            Tag::Opening {
+                lt_sign: token::Lt(Span::call_site()),
                 name: dash_ident!(foo),
                 attrs: vec![
-                    ast::Attr {
+                    Attr {
                         key: dash_ident!(bar),
-                        value: ast::Value::LitStr(lit_str!("baz"))
+                        eq_sign: Token![=](Span::call_site()),
+                        value: Value::LitStr(lit_str!("baz"))
                     },
-                    ast::Attr {
+                    Attr {
                         key: dash_ident!(qux),
-                        value: ast::Value::Expr(syn::Expr::Lit(syn::ExprLit {
+                        eq_sign: Token![=](Span::call_site()),
+                        value: Value::Expr(syn::Expr::Lit(syn::ExprLit {
                             attrs: vec![],
                             lit: syn::Lit::Bool(lit_bool!(false))
                         }))
                     },
                 ],
-                void_slash: None
+                void_slash: None,
+                gt_sign: token::Gt(Span::call_site()),
             }
         )
     }
@@ -255,11 +292,13 @@ mod tests {
     #[test]
     fn parses_to_void_tag() {
         assert_eq!(
-            syn::parse2::<ast::Tag>(quote!(<foo />)).unwrap(),
-            ast::Tag::Opening {
+            syn::parse2::<Tag>(quote!(<foo />)).unwrap(),
+            Tag::Opening {
+                lt_sign: token::Lt(Span::call_site()),
                 name: dash_ident!(foo),
                 attrs: vec![],
-                void_slash: Some(syn::token::Slash(Span::call_site()))
+                void_slash: Some(syn::token::Slash(Span::call_site())),
+                gt_sign: token::Gt(Span::call_site()),
             }
         )
     }
