@@ -1,9 +1,6 @@
-#![allow(clippy::new_without_default)]
-
 pub mod ast;
 
 mod parse;
-pub use parse::Parser;
 
 #[cfg(feature = "fmt")]
 mod fmt;
