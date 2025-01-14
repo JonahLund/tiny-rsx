@@ -1,3 +1,4 @@
+use proc_macro2::TokenStream;
 use quote::ToTokens;
 use syn::{punctuated::Punctuated, Expr, Ident, LitStr, Token};
 
@@ -39,64 +40,65 @@ pub struct Attr {
     pub value: Value,
 }
 
-/// An HTML opening or closing tag: `<foo>`, `</foo>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Tag {
-    Opening {
-        lt_sign: Token![<],
-        name: DashIdent,
-        attrs: Vec<Attr>,
-        void_slash: Option<Token![/]>,
-        gt_sign: Token![>],
+pub struct OpeningTag {
+    pub lt_sign: Token![<],
+    pub name: DashIdent,
+    pub attrs: Vec<Attr>,
+    pub gt_sign: Token![>],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosingTag {
+    pub lt_sign: Token![<],
+    pub slash: Token![/],
+    pub name: DashIdent,
+    pub gt_sign: Token![>],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoidTag {
+    pub lt_sign: Token![<],
+    pub name: DashIdent,
+    pub attrs: Vec<Attr>,
+    pub void_slash: Token![/],
+    pub gt_sign: Token![>],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpeningOrVoidTag {
+    Opening(OpeningTag),
+    Void(VoidTag),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Element {
+    OpeningClosing {
+        opening_tag: OpeningTag,
+        children: Vec<Node>,
+        closing_tag: ClosingTag,
     },
-    Closing {
-        lt_sign: Token![<],
-        name: DashIdent,
-        gt_sign: Token![>],
-    },
+    Void(VoidTag),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Node {
-    Doctype(Doctype),
-    Tag(Tag),
+    Element(Element),
     Value(Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeTree {
-    pub nodes: Box<[Node]>,
-}
-
-impl Tag {
-    pub fn is_opening_tag(&self) -> bool {
-        matches!(self, Self::Opening { .. })
-    }
-
-    pub fn is_closing_tag(&self) -> bool {
-        matches!(self, Self::Closing { .. })
-    }
-
-    pub fn is_self_closing(&self) -> bool {
-        matches!(
-            self,
-            Self::Opening {
-                void_slash: Some(_),
-                ..
-            }
-        )
-    }
-}
+pub struct NodeTree(pub Box<[Node]>);
 
 impl ToTokens for DashIdent {
     #[inline]
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         self.0.to_tokens(tokens)
     }
 }
 
 impl ToTokens for Doctype {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         self.lt_sign.to_tokens(tokens);
         self.excl_mark.to_tokens(tokens);
         self.doctype.to_tokens(tokens);
@@ -107,7 +109,7 @@ impl ToTokens for Doctype {
 
 impl ToTokens for Value {
     #[inline]
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
             Value::LitStr(lit_str) => lit_str.to_tokens(tokens),
             Value::Expr(expr) => expr.to_tokens(tokens),
@@ -117,38 +119,85 @@ impl ToTokens for Value {
 
 impl ToTokens for Attr {
     #[inline]
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        self.key.to_tokens(tokens);
-        self.value.to_tokens(tokens);
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let Self {
+            key,
+            eq_sign,
+            value,
+        } = self;
+        key.to_tokens(tokens);
+        eq_sign.to_tokens(tokens);
+        value.to_tokens(tokens);
     }
 }
 
-impl ToTokens for Tag {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+impl ToTokens for OpeningTag {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let Self {
+            lt_sign,
+            name,
+            attrs,
+            gt_sign,
+        } = self;
+        lt_sign.to_tokens(tokens);
+        name.to_tokens(tokens);
+        for attr in attrs {
+            attr.to_tokens(tokens);
+        }
+        gt_sign.to_tokens(tokens);
+    }
+}
+
+impl ToTokens for ClosingTag {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let Self {
+            lt_sign,
+            slash,
+            name,
+            gt_sign,
+        } = self;
+        lt_sign.to_tokens(tokens);
+        slash.to_tokens(tokens);
+        name.to_tokens(tokens);
+        gt_sign.to_tokens(tokens);
+    }
+}
+
+impl ToTokens for VoidTag {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let Self {
+            lt_sign,
+            name,
+            attrs,
+            void_slash,
+            gt_sign,
+        } = self;
+        lt_sign.to_tokens(tokens);
+        name.to_tokens(tokens);
+        for attr in attrs {
+            attr.to_tokens(tokens);
+        }
+        void_slash.to_tokens(tokens);
+        gt_sign.to_tokens(tokens);
+    }
+}
+
+impl ToTokens for Element {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
-            Tag::Opening {
-                lt_sign,
-                name,
-                attrs,
-                void_slash,
-                gt_sign,
+            Self::OpeningClosing {
+                opening_tag,
+                children,
+                closing_tag,
             } => {
-                lt_sign.to_tokens(tokens);
-                name.to_tokens(tokens);
-                for attr in attrs {
-                    attr.to_tokens(tokens);
+                opening_tag.to_tokens(tokens);
+                for child in children {
+                    child.to_tokens(tokens);
                 }
-                void_slash.to_tokens(tokens);
-                gt_sign.to_tokens(tokens);
+                closing_tag.to_tokens(tokens);
             }
-            Tag::Closing {
-                lt_sign,
-                name,
-                gt_sign,
-            } => {
-                lt_sign.to_tokens(tokens);
-                name.to_tokens(tokens);
-                gt_sign.to_tokens(tokens);
+            Self::Void(void_tag) => {
+                void_tag.to_tokens(tokens);
             }
         }
     }
@@ -156,10 +205,9 @@ impl ToTokens for Tag {
 
 impl ToTokens for Node {
     #[inline]
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
-            Node::Doctype(doctype) => doctype.to_tokens(tokens),
-            Node::Tag(tag) => tag.to_tokens(tokens),
+            Node::Element(el) => el.to_tokens(tokens),
             Node::Value(value) => value.to_tokens(tokens),
         }
     }
@@ -167,8 +215,8 @@ impl ToTokens for Node {
 
 impl ToTokens for NodeTree {
     #[inline]
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        for node in &self.nodes {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        for node in &self.0 {
             node.to_tokens(tokens);
         }
     }
